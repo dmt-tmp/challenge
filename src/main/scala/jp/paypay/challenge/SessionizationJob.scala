@@ -3,7 +3,7 @@ package jp.paypay.challenge
 import scala.concurrent.duration._
 
 import org.apache.spark.sql.expressions.Window
-import org.apache.spark.sql.{Column, DataFrame, SparkSession}
+import org.apache.spark.sql.{Column, DataFrame, Dataset, SparkSession}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 
@@ -51,25 +51,48 @@ object SessionizationJob {
     val clientIpField: String = "client_ip"
 
     val isNewSession: Column =
-      when(unix_timestamp(col(timestampField)) - unix_timestamp(col(previousTimestampField)) < lit(newSessionThreshold.toSeconds),
+      when(col("unix_ts") - col("previous_unix_ts") < lit(newSessionThreshold.toSeconds),
         lit(0)
       ).otherwise(
         lit(1)
       )
 
-    accessLogEntries
-      .withColumn(clientIpField,
-        split($"client_ip_and_port", ":")(0)
-      )
-      .withColumn(previousTimestampField,
-        lag(timestampField, 1).over(Window.partitionBy(clientIpField).orderBy(timestampField))
-      )
-      .withColumn("is_new_session", isNewSession)
-      .withColumn("user_session_id",
-        sum(isNewSession).over(Window.partitionBy(clientIpField).orderBy(timestampField))
-      )
-      .withColumn("global_session_id",
-        sum(isNewSession).over(Window.orderBy(clientIpField, timestampField))
-      )
+    val accessLogEntriesWithSessions: DataFrame =
+      accessLogEntries
+        .withColumn(clientIpField,
+          split($"client_ip_and_port", ":")(0)
+        )
+        .withColumn(previousTimestampField,
+          lag(timestampField, 1).over(Window.partitionBy(clientIpField).orderBy(timestampField))
+        )
+        .withColumn("unix_ts", unix_timestamp(col(timestampField))) // TODO: use milliseconds instead
+        .withColumn("previous_unix_ts", unix_timestamp(col(previousTimestampField)))
+        .withColumn("is_new_session", isNewSession)
+        .withColumn("user_session_id",
+          sum(isNewSession).over(Window.partitionBy(clientIpField).orderBy(timestampField))
+        )
+        /* .withColumn("global_session_id",
+          sum(isNewSession).over(Window.orderBy(clientIpField, timestampField))
+        ) */
+
+    // Determine the average session time
+    val averageSessionTimeDS: Dataset[Double] =
+      accessLogEntriesWithSessions
+        .groupBy("client_ip", "user_session_id")
+        .agg(
+          max("unix_ts"),
+          min("unix_ts"),
+          (max("unix_ts") - min("unix_ts")).as("session_time")
+        )
+        .select(avg("session_time"))
+        .as[Double]
+
+    averageSessionTimeDS.collect().headOption.foreach { avgSessionTime =>
+      println(s"The average session time is $avgSessionTime ms")
+    }
+
+    // Determine unique URL visits per session. To clarify, count a hit to a unique URL only once per session.
+
+    // Find the most engaged users, ie the IPs with the longest session times
   }
 }

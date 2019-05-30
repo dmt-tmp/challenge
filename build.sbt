@@ -3,7 +3,6 @@ import sys.process._
 name := "challenge"
 version := "0.1-SNAPSHOT"
 organization := "jp.paypay"
-// scalafmtConfig := Some(new File("scalafmt-conf/.scalafmt.conf"))
 
 scalaVersion := "2.11.8"
 
@@ -22,21 +21,14 @@ scalacOptions ++= Seq(
 
 val sparkVersion = "2.2.3"
 
-// Exclude slf4j from spark testing base that changes spark log level and spams the terminal.
-// val excludeSlf4jLog4j = ExclusionRule(organization = "org.slf4j", name = "slf4j-log4j12")
-
 libraryDependencies ++= Seq(
  // Spark dependencies. Marked as provided because they must not be included in the uber jar
   "org.apache.spark" %% "spark-core" % sparkVersion % "provided",
   "org.apache.spark" %% "spark-hive" % sparkVersion % "provided",
-  // "org.apache.spark" %% "spark-mllib" % sparkVersion % "provided",
   "org.apache.spark" %% "spark-sql" % sparkVersion % "provided",
-
-  // "org.apache.hadoop" % "hadoop-aws" % "2.7.3" % "provided",
 
   // Test libraries
   "org.scalatest" %% "scalatest" % "3.0.2" % Test,
-  // "com.holdenkarau" %% "spark-testing-base" % "2.1.1_0.7.4" % "test", // excludeAll excludeSlf4jLog4j,
   "com.holdenkarau" %% "spark-testing-base" % "2.2.3_0.12.0" % Test
 )
 

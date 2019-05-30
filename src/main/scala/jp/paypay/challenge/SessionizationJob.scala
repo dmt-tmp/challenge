@@ -2,7 +2,9 @@ package jp.paypay.challenge
 
 import scala.concurrent.duration._
 
-import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.expressions.Window
+import org.apache.spark.sql.{Column, DataFrame, SparkSession}
+import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 
 
@@ -31,6 +33,7 @@ object SessionizationJob {
 
   def main(args: Array[String]): Unit = {
     val spark: SparkSession = SparkSession.builder().getOrCreate()
+    import spark.implicits._
 
     // TODO: parse args
     val inputPath: String = args.head
@@ -43,5 +46,30 @@ object SessionizationJob {
 
     val accessLogEntries: DataFrame = spark.read.options(csvOptions).csv(inputPath)
 
+    val previousTimestampField: String = "previous_timestamp"
+    val timestampField: String = "timestamp"
+    val clientIpField: String = "client_ip"
+
+    val isNewSession: Column =
+      when(unix_timestamp(col(timestampField)) - unix_timestamp(col(previousTimestampField)) < lit(newSessionThreshold.toSeconds),
+        lit(0)
+      ).otherwise(
+        lit(1)
+      )
+
+    accessLogEntries
+      .withColumn(clientIpField,
+        split($"client_ip_and_port", ":")(0)
+      )
+      .withColumn(previousTimestampField,
+        lag(timestampField, 1).over(Window.partitionBy(clientIpField).orderBy(timestampField))
+      )
+      .withColumn("is_new_session", isNewSession)
+      .withColumn("user_session_id",
+        sum(isNewSession).over(Window.partitionBy(clientIpField).orderBy(timestampField))
+      )
+      .withColumn("global_session_id",
+        sum(isNewSession).over(Window.orderBy(clientIpField, timestampField))
+      )
   }
 }

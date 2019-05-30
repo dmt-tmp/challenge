@@ -1,2 +1,19 @@
+# Mac files
+.DS_Store
+
+# Scala files
 *.class
 *.log
+.idea/
+.cache
+.history
+.lib/
+dist/*
+target/
+lib_managed/
+src_managed/
+project/boot/
+project/plugins/project/
+.scala_dependencies
+.worksheet
+metastore_db/

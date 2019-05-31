@@ -79,12 +79,15 @@ object SessionizationJob {
         )
 
     // 2) Determine the average session time
-    val averageSessionTimeDS: Dataset[Double] =
+    val accessLogEntriesWithSessionTimes: DataFrame =
       accessLogEntriesWithSessions
         .groupBy("client_ip", "user_session_id")
         .agg(
           (max("unix_ts") - min("unix_ts")).as("session_time")
         )
+
+    val averageSessionTimeDS: Dataset[Double] =
+      accessLogEntriesWithSessionTimes
         .select(avg("session_time"))
         .as[Double]
 
@@ -99,5 +102,12 @@ object SessionizationJob {
       .agg(countDistinct("url").as("nb_url_visits"))
 
     // 4) Find the most engaged users, ie the IPs with the longest session times
+    val mostEngagedUsers: DataFrame =
+      accessLogEntriesWithSessionTimes
+        .orderBy($"session_time".desc)
+        .select("client_ip", "session_time")
+        .limit(10)
+
+    mostEngagedUsers.show(false)
   }
 }

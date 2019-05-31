@@ -107,6 +107,9 @@ object SessionizationJob {
     // 4) Find the most engaged users, ie the IPs with the longest session times
     val mostEngagedUsers: DataFrame =
       accessLogEntriesWithSessionTimes
+        // Only keep the longest session for each IP, to avoid duplicat IPs in the result
+        .groupBy("client_ip")
+        .agg(max("session_time").as("session_time"))
         .orderBy($"session_time".desc)
         .select("client_ip", "session_time")
         .limit(10)

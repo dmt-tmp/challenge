@@ -96,10 +96,13 @@ object SessionizationJob {
     }
 
     // 3) Determine unique URL visits per session. To clarify, count a hit to a unique URL only once per session.
-    accessLogEntriesWithSessions
-      .withColumn("url", split($"request", pattern = " ")(1))
-      .groupBy("client_ip", "user_session_id")
-      .agg(countDistinct("url").as("nb_url_visits"))
+    val usersAndNbVisits: DataFrame =
+      accessLogEntriesWithSessions
+        .withColumn("url", split($"request", pattern = " ")(1))
+        .groupBy("client_ip", "user_session_id")
+        .agg(countDistinct("url").as("nb_url_visits"))
+
+    usersAndNbVisits.describe("nb_url_visits").show(false)
 
     // 4) Find the most engaged users, ie the IPs with the longest session times
     val mostEngagedUsers: DataFrame =

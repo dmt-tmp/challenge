@@ -44,12 +44,18 @@ object SessionizationJob {
       "inferSchema" -> "false"
     )
 
-    val accessLogEntries: DataFrame = spark.read.options(csvOptions).csv(inputPath)
+    val accessLogEntries: DataFrame =
+      spark
+        .read
+        .options(csvOptions)
+        .schema(accessLogEntriesSchema)
+        .csv(inputPath)
 
     val previousTimestampField: String = "previous_timestamp"
     val timestampField: String = "timestamp"
     val clientIpField: String = "client_ip"
 
+    // 1) Sessionize the web log by IP
     val isNewSession: Column =
       when(col("unix_ts") - col("previous_unix_ts") < lit(newSessionThreshold.toSeconds),
         lit(0)
@@ -60,7 +66,7 @@ object SessionizationJob {
     val accessLogEntriesWithSessions: DataFrame =
       accessLogEntries
         .withColumn(clientIpField,
-          split($"client_ip_and_port", ":")(0)
+          split($"client_ip_and_port", pattern = ":")(0)
         )
         .withColumn(previousTimestampField,
           lag(timestampField, 1).over(Window.partitionBy(clientIpField).orderBy(timestampField))
@@ -71,28 +77,27 @@ object SessionizationJob {
         .withColumn("user_session_id",
           sum(isNewSession).over(Window.partitionBy(clientIpField).orderBy(timestampField))
         )
-        /* .withColumn("global_session_id",
-          sum(isNewSession).over(Window.orderBy(clientIpField, timestampField))
-        ) */
 
-    // Determine the average session time
+    // 2) Determine the average session time
     val averageSessionTimeDS: Dataset[Double] =
       accessLogEntriesWithSessions
         .groupBy("client_ip", "user_session_id")
         .agg(
-          max("unix_ts"),
-          min("unix_ts"),
           (max("unix_ts") - min("unix_ts")).as("session_time")
         )
         .select(avg("session_time"))
         .as[Double]
 
     averageSessionTimeDS.collect().headOption.foreach { avgSessionTime =>
-      println(s"The average session time is $avgSessionTime ms")
+      println(s"The average session time is $avgSessionTime seconds.")
     }
 
-    // Determine unique URL visits per session. To clarify, count a hit to a unique URL only once per session.
+    // 3) Determine unique URL visits per session. To clarify, count a hit to a unique URL only once per session.
+    accessLogEntriesWithSessions
+      .withColumn("url", split($"request", pattern = " ")(1))
+      .groupBy("client_ip", "user_session_id")
+      .agg(countDistinct("url").as("nb_url_visits"))
 
-    // Find the most engaged users, ie the IPs with the longest session times
+    // 4) Find the most engaged users, ie the IPs with the longest session times
   }
 }

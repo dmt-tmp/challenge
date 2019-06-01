@@ -2,7 +2,7 @@ package jp.paypay.challenge
 
 import scala.concurrent.duration._
 
-import org.apache.spark.sql.expressions.Window
+import org.apache.spark.sql.expressions.{Window, WindowSpec}
 import org.apache.spark.sql.{Column, DataFrame, Dataset, SparkSession}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
@@ -73,25 +73,29 @@ object SessionizationJob {
         lit(1)
       )
 
+    val fieldsToIdentifySession: Seq[String] = Seq(clientIpField)
+    val colsToIdentifySession: Seq[Column] = fieldsToIdentifySession.map(col)
+    val windowSpec: WindowSpec = Window.partitionBy(colsToIdentifySession: _*).orderBy(timestampField)
+
     val accessLogEntriesWithSessions: DataFrame =
       accessLogEntries
         .withColumn(clientIpField,
           split(col(clientIpAndPortField), pattern = ":")(0)
         )
         .withColumn(previousTimestampField,
-          lag(timestampField, 1).over(Window.partitionBy(clientIpField).orderBy(timestampField))
+          lag(timestampField, 1).over(windowSpec)
         )
         .withColumn(unixTsField, unix_timestamp(col(timestampField))) // TODO: use milliseconds instead
         .withColumn(previousUnixTsField, unix_timestamp(col(previousTimestampField)))
         .withColumn(isNewSessionField, isNewSession)
         .withColumn(userSessionIdField,
-          sum(isNewSession).over(Window.partitionBy(clientIpField).orderBy(timestampField))
+          sum(isNewSession).over(windowSpec)
         )
 
     // 2) Determine the average session time
     val accessLogEntriesWithSessionTimes: DataFrame =
       accessLogEntriesWithSessions
-        .groupBy(clientIpField, userSessionIdField)
+        .groupBy(userSessionIdField, fieldsToIdentifySession: _*)
         .agg(
           (max(unixTsField) - min(unixTsField)).as(sessionTimeField)
         )
@@ -109,7 +113,7 @@ object SessionizationJob {
     val usersAndNbVisits: DataFrame =
       accessLogEntriesWithSessions
         .withColumn(urlField, split(col(requestField), pattern = " ")(1))
-        .groupBy(clientIpField, userSessionIdField)
+        .groupBy(userSessionIdField, fieldsToIdentifySession: _*)
         .agg(countDistinct(urlField).as(nbUrlVisitsField))
 
     usersAndNbVisits.describe(nbUrlVisitsField).show(false)
@@ -118,10 +122,10 @@ object SessionizationJob {
     val mostEngagedUsers: DataFrame =
       accessLogEntriesWithSessionTimes
         // Only keep the longest session for each IP, to avoid duplicat IPs in the result
-        .groupBy(clientIpField)
+        .groupBy(colsToIdentifySession: _*)
         .agg(max(sessionTimeField).as(sessionTimeField))
         .orderBy(col(sessionTimeField).desc)
-        .select(clientIpField, sessionTimeField)
+        .select(sessionTimeField, fieldsToIdentifySession: _*)
         .limit(10)
 
     mostEngagedUsers.show(false)

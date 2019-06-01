@@ -13,11 +13,25 @@ object SessionizationJob {
   // If a user is inactive for "newSessionThreshold" or more, any future activity is attributed to a new session.
   val newSessionThreshold: Duration = 15.minutes
 
+  // Name of fields. We use constants to avoid typos in code that manipulates dataframes
+  val timestampField: String = "timestamp"
+  val previousTimestampField: String = "previous_timestamp"
+  val unixTsField: String = "unix_ts_field"
+  val previousUnixTsField: String = "previous_unix_ts_field"
+  val clientIpField: String = "client_ip"
+  val clientIpAndPortField : String = "client_ip_and_port"
+  val isNewSessionField: String = "is_new_session"
+  val userSessionIdField: String = "user_session_id"
+  val sessionTimeField: String = "session_time"
+  val requestField: String = "request"
+  val urlField: String = "url"
+  val nbUrlVisitsField: String = "nb_url_visits"
+
   // https://docs.aws.amazon.com/elasticloadbalancing/latest/classic/access-log-collection.html#access-log-entry-format
   val accessLogEntriesSchema = new StructType()
-    .add("timestamp", TimestampType)
+    .add(timestampField, TimestampType)
     .add("elb", StringType)
-    .add("client_ip_and_port", StringType)
+    .add(clientIpAndPortField, StringType)
     .add("backend_ip_and_port", StringType)
     .add("request_processing_time", DoubleType)
     .add("backend_processing_time", DoubleType)
@@ -26,7 +40,7 @@ object SessionizationJob {
     .add("backend_status_code", ShortType)
     .add("received_bytes", IntegerType)
     .add("sent_bytes", IntegerType)
-    .add("request", StringType)
+    .add(requestField, StringType)
     .add("user_agent", StringType)
     .add("ssl_cipher", StringType)
     .add("ssl_protocol", StringType)
@@ -51,13 +65,9 @@ object SessionizationJob {
         .schema(accessLogEntriesSchema)
         .csv(inputPath)
 
-    val previousTimestampField: String = "previous_timestamp"
-    val timestampField: String = "timestamp"
-    val clientIpField: String = "client_ip"
-
     // 1) Sessionize the web log by IP
     val isNewSession: Column =
-      when(col("unix_ts") - col("previous_unix_ts") < lit(newSessionThreshold.toSeconds),
+      when(col(unixTsField) - col(previousUnixTsField) < lit(newSessionThreshold.toSeconds),
         lit(0)
       ).otherwise(
         lit(1)
@@ -66,29 +76,29 @@ object SessionizationJob {
     val accessLogEntriesWithSessions: DataFrame =
       accessLogEntries
         .withColumn(clientIpField,
-          split($"client_ip_and_port", pattern = ":")(0)
+          split(col(clientIpAndPortField), pattern = ":")(0)
         )
         .withColumn(previousTimestampField,
           lag(timestampField, 1).over(Window.partitionBy(clientIpField).orderBy(timestampField))
         )
-        .withColumn("unix_ts", unix_timestamp(col(timestampField))) // TODO: use milliseconds instead
-        .withColumn("previous_unix_ts", unix_timestamp(col(previousTimestampField)))
-        .withColumn("is_new_session", isNewSession)
-        .withColumn("user_session_id",
+        .withColumn(unixTsField, unix_timestamp(col(timestampField))) // TODO: use milliseconds instead
+        .withColumn(previousUnixTsField, unix_timestamp(col(previousTimestampField)))
+        .withColumn(isNewSessionField, isNewSession)
+        .withColumn(userSessionIdField,
           sum(isNewSession).over(Window.partitionBy(clientIpField).orderBy(timestampField))
         )
 
     // 2) Determine the average session time
     val accessLogEntriesWithSessionTimes: DataFrame =
       accessLogEntriesWithSessions
-        .groupBy("client_ip", "user_session_id")
+        .groupBy(clientIpField, userSessionIdField)
         .agg(
-          (max("unix_ts") - min("unix_ts")).as("session_time")
+          (max(unixTsField) - min(unixTsField)).as(sessionTimeField)
         )
 
     val averageSessionTimeDS: Dataset[Double] =
       accessLogEntriesWithSessionTimes
-        .select(avg("session_time"))
+        .select(avg(sessionTimeField))
         .as[Double]
 
     averageSessionTimeDS.collect().headOption.foreach { avgSessionTime =>
@@ -98,20 +108,20 @@ object SessionizationJob {
     // 3) Determine unique URL visits per session. To clarify, count a hit to a unique URL only once per session.
     val usersAndNbVisits: DataFrame =
       accessLogEntriesWithSessions
-        .withColumn("url", split($"request", pattern = " ")(1))
-        .groupBy("client_ip", "user_session_id")
-        .agg(countDistinct("url").as("nb_url_visits"))
+        .withColumn(urlField, split(col(requestField), pattern = " ")(1))
+        .groupBy(clientIpField, userSessionIdField)
+        .agg(countDistinct(urlField).as(nbUrlVisitsField))
 
-    usersAndNbVisits.describe("nb_url_visits").show(false)
+    usersAndNbVisits.describe(nbUrlVisitsField).show(false)
 
     // 4) Find the most engaged users, ie the IPs with the longest session times
     val mostEngagedUsers: DataFrame =
       accessLogEntriesWithSessionTimes
         // Only keep the longest session for each IP, to avoid duplicat IPs in the result
-        .groupBy("client_ip")
-        .agg(max("session_time").as("session_time"))
-        .orderBy($"session_time".desc)
-        .select("client_ip", "session_time")
+        .groupBy(clientIpField)
+        .agg(max(sessionTimeField).as(sessionTimeField))
+        .orderBy(col(sessionTimeField).desc)
+        .select(clientIpField, sessionTimeField)
         .limit(10)
 
     mostEngagedUsers.show(false)

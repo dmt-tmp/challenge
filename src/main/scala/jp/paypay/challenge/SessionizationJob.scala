@@ -3,7 +3,7 @@ package jp.paypay.challenge
 import scala.concurrent.duration._
 
 import org.apache.spark.sql.expressions.{Window, WindowSpec}
-import org.apache.spark.sql.{Column, DataFrame, Dataset, SparkSession}
+import org.apache.spark.sql.{Column, DataFrame, Dataset, SaveMode, SparkSession}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 
@@ -26,6 +26,7 @@ object SessionizationJob {
   val requestField: String = "request"
   val urlField: String = "url"
   val nbUrlVisitsField: String = "nb_url_visits"
+  val userAgentField: String = "user_agent"
 
   // https://docs.aws.amazon.com/elasticloadbalancing/latest/classic/access-log-collection.html#access-log-entry-format
   val accessLogEntriesSchema = new StructType()
@@ -41,7 +42,7 @@ object SessionizationJob {
     .add("received_bytes", IntegerType)
     .add("sent_bytes", IntegerType)
     .add(requestField, StringType)
-    .add("user_agent", StringType)
+    .add(userAgentField, StringType)
     .add("ssl_cipher", StringType)
     .add("ssl_protocol", StringType)
 
@@ -51,6 +52,7 @@ object SessionizationJob {
 
     // TODO: parse args
     val inputPath: String = args.head
+    val outputPath: String = args(1)
 
     val csvOptions: Map[String, String] = Map(
       "delimiter" -> " ",
@@ -65,69 +67,85 @@ object SessionizationJob {
         .schema(accessLogEntriesSchema)
         .csv(inputPath)
 
-    // 1) Sessionize the web log by IP
-    val isNewSession: Column =
-      when(col(unixTsField) - col(previousUnixTsField) < lit(newSessionThreshold.toSeconds),
-        lit(0)
-      ).otherwise(
-        lit(1)
-      )
-
-    val fieldsToIdentifySession: Seq[String] = Seq(clientIpField)
-    val colsToIdentifySession: Seq[Column] = fieldsToIdentifySession.map(col)
-    val windowSpec: WindowSpec = Window.partitionBy(colsToIdentifySession: _*).orderBy(timestampField)
-
-    val accessLogEntriesWithSessions: DataFrame =
-      accessLogEntries
-        .withColumn(clientIpField,
-          split(col(clientIpAndPortField), pattern = ":")(0)
-        )
-        .withColumn(previousTimestampField,
-          lag(timestampField, 1).over(windowSpec)
-        )
-        .withColumn(unixTsField, unix_timestamp(col(timestampField))) // TODO: use milliseconds instead
-        .withColumn(previousUnixTsField, unix_timestamp(col(previousTimestampField)))
-        .withColumn(isNewSessionField, isNewSession)
-        .withColumn(userSessionIdField,
-          sum(isNewSession).over(windowSpec)
+    Map(
+      // Sessionize logs using client IP
+      "sessionsByIp" -> Seq(clientIpField),
+      // "As a bonus", sessionize logs using client IP and user agent
+      "sessionsByIpAndUserAgent" -> Seq(clientIpField, userAgentField)
+    ).foreach { case (folder, sessionisationFields) =>
+      // 1) Sessionize the web logs using "sessionisationFields"
+      val isNewSession: Column =
+        when(col(unixTsField) - col(previousUnixTsField) < lit(newSessionThreshold.toSeconds),
+          lit(0)
+        ).otherwise(
+          lit(1)
         )
 
-    // 2) Determine the average session time
-    val accessLogEntriesWithSessionTimes: DataFrame =
-      accessLogEntriesWithSessions
-        .groupBy(userSessionIdField, fieldsToIdentifySession: _*)
-        .agg(
-          (max(unixTsField) - min(unixTsField)).as(sessionTimeField)
-        )
+      val sessionizationCols: Seq[Column] = sessionisationFields.map(col)
+      val windowSpec: WindowSpec = Window.partitionBy(sessionizationCols: _*).orderBy(timestampField)
 
-    val averageSessionTimeDS: Dataset[Double] =
-      accessLogEntriesWithSessionTimes
-        .select(avg(sessionTimeField))
-        .as[Double]
+      val accessLogEntriesWithSessions: DataFrame = {
+        val df: DataFrame =
+          accessLogEntries
+            .withColumn(clientIpField,
+              split(col(clientIpAndPortField), pattern = ":")(0)
+            )
+            .withColumn(previousTimestampField,
+              lag(timestampField, 1).over(windowSpec)
+            )
+            .withColumn(unixTsField, unix_timestamp(col(timestampField)))
+            .withColumn(previousUnixTsField, unix_timestamp(col(previousTimestampField)))
+            .withColumn(isNewSessionField, isNewSession)
+            .withColumn(userSessionIdField,
+              sum(isNewSession).over(windowSpec)
+            )
 
-    averageSessionTimeDS.collect().headOption.foreach { avgSessionTime =>
-      println(s"The average session time is $avgSessionTime seconds.")
+        df.coalesce(8)
+          .write
+          .mode(SaveMode.Overwrite)
+          .parquet(s"$outputPath/$folder")
+
+        spark.read.parquet(s"$outputPath/$folder")
+      }
+
+      // 2) Determine the average session time
+      val accessLogEntriesWithSessionTimes: DataFrame =
+        accessLogEntriesWithSessions
+          .groupBy(userSessionIdField, sessionisationFields: _*)
+          .agg(
+            (max(unixTsField) - min(unixTsField)).as(sessionTimeField)
+          )
+
+      val averageSessionTimeDS: Dataset[Double] =
+        accessLogEntriesWithSessionTimes
+          .select(avg(sessionTimeField))
+          .as[Double]
+
+      averageSessionTimeDS.collect().headOption.foreach { avgSessionTime =>
+        println(s"The average session time is $avgSessionTime seconds.")
+      }
+
+      // 3) Determine unique URL visits per session. To clarify, count a hit to a unique URL only once per session.
+      val usersAndNbVisits: DataFrame =
+        accessLogEntriesWithSessions
+          .withColumn(urlField, split(col(requestField), pattern = " ")(1))
+          .groupBy(userSessionIdField, sessionisationFields: _*)
+          .agg(countDistinct(urlField).as(nbUrlVisitsField))
+
+      usersAndNbVisits.describe(nbUrlVisitsField).show(false)
+
+      // 4) Find the most engaged users, ie the IPs with the longest session times
+      val mostEngagedUsers: DataFrame =
+        accessLogEntriesWithSessionTimes
+          // Only keep the longest session for each IP, to avoid duplicat IPs in the result
+          .groupBy(sessionizationCols: _*)
+          .agg(max(sessionTimeField).as(sessionTimeField))
+          .orderBy(col(sessionTimeField).desc)
+          .select(sessionTimeField, sessionisationFields: _*)
+          .limit(10)
+
+      mostEngagedUsers.show(false)
     }
 
-    // 3) Determine unique URL visits per session. To clarify, count a hit to a unique URL only once per session.
-    val usersAndNbVisits: DataFrame =
-      accessLogEntriesWithSessions
-        .withColumn(urlField, split(col(requestField), pattern = " ")(1))
-        .groupBy(userSessionIdField, fieldsToIdentifySession: _*)
-        .agg(countDistinct(urlField).as(nbUrlVisitsField))
-
-    usersAndNbVisits.describe(nbUrlVisitsField).show(false)
-
-    // 4) Find the most engaged users, ie the IPs with the longest session times
-    val mostEngagedUsers: DataFrame =
-      accessLogEntriesWithSessionTimes
-        // Only keep the longest session for each IP, to avoid duplicat IPs in the result
-        .groupBy(colsToIdentifySession: _*)
-        .agg(max(sessionTimeField).as(sessionTimeField))
-        .orderBy(col(sessionTimeField).desc)
-        .select(sessionTimeField, fieldsToIdentifySession: _*)
-        .limit(10)
-
-    mostEngagedUsers.show(false)
   }
 }

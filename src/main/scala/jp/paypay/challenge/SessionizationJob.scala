@@ -74,33 +74,12 @@ object SessionizationJob {
       "sessionsByIpAndUserAgent" -> Seq(clientIpField, userAgentField)
     ).foreach { case (folder, sessionisationFields) =>
       // 1) Sessionize the web logs using "sessionisationFields"
-      val isNewSession: Column =
-        when(col(unixTsField) - col(previousUnixTsField) < lit(newSessionThreshold.toSeconds),
-          lit(0)
-        ).otherwise(
-          lit(1)
-        )
-
       val sessionizationCols: Seq[Column] = sessionisationFields.map(col)
-      val windowSpec: WindowSpec = Window.partitionBy(sessionizationCols: _*).orderBy(timestampField)
 
       val accessLogEntriesWithSessions: DataFrame = {
-        val df: DataFrame =
-          accessLogEntries
-            .withColumn(clientIpField,
-              split(col(clientIpAndPortField), pattern = ":")(0)
-            )
-            .withColumn(previousTimestampField,
-              lag(timestampField, 1).over(windowSpec)
-            )
-            .withColumn(unixTsField, unix_timestamp(col(timestampField)))
-            .withColumn(previousUnixTsField, unix_timestamp(col(previousTimestampField)))
-            .withColumn(isNewSessionField, isNewSession)
-            .withColumn(userSessionIdField,
-              sum(isNewSession).over(windowSpec)
-            )
+        val df: DataFrame = accessLogEntries.transform(sessionize(sessionizationCols))
 
-        df.coalesce(8)
+        df.coalesce(8)  // TODO: this should be an argument of the job
           .write
           .mode(SaveMode.Overwrite)
           .parquet(s"$outputPath/$folder")
@@ -148,4 +127,30 @@ object SessionizationJob {
     }
 
   }
+
+  def sessionize(sessionizationCols: Seq[Column])(accessLogEntries: DataFrame): DataFrame = {
+    val isNewSession: Column =
+      when(col(unixTsField) - col(previousUnixTsField) < lit(newSessionThreshold.toSeconds),
+        lit(0)
+      ).otherwise(
+        lit(1)
+      )
+
+    val windowSpec: WindowSpec = Window.partitionBy(sessionizationCols: _*).orderBy(timestampField)
+
+    accessLogEntries
+      .withColumn(clientIpField,
+        split(col(clientIpAndPortField), pattern = ":")(0)
+      )
+      .withColumn(previousTimestampField,
+        lag(timestampField, 1).over(windowSpec)
+      )
+      .withColumn(unixTsField, unix_timestamp(col(timestampField)))
+      .withColumn(previousUnixTsField, unix_timestamp(col(previousTimestampField)))
+      .withColumn(isNewSessionField, isNewSession)
+      .withColumn(userSessionIdField,
+        sum(isNewSession).over(windowSpec)
+      )
+  }
+
 }

@@ -1,17 +1,12 @@
 package jp.paypay.challenge
 
-import scala.concurrent.duration._
-
-import org.apache.spark.sql.expressions.{Window, WindowSpec}
 import org.apache.spark.sql.{Column, DataFrame, Dataset, SaveMode, SparkSession}
+import org.apache.spark.sql.expressions.{Window, WindowSpec}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
-
+import scala.concurrent.duration._
 
 object SessionizationJob {
-
-  // If a user is inactive for "newSessionThreshold" or more, any future activity is attributed to a new session.
-  val newSessionThreshold: Duration = 15.minutes
 
   // Name of fields. We use constants to avoid typos in code that manipulates dataframes
   val timestampField: String = "timestamp"
@@ -49,9 +44,9 @@ object SessionizationJob {
   def main(args: Array[String]): Unit = {
     val spark: SparkSession = SparkSession.builder().getOrCreate()
 
-    // TODO: parse args
-    val inputPath: String = args.head
-    val outputPath: String = args(1)
+    val jobArgs: SessionizationJobArgs =
+      SessionizationJobArgs.parser.parse(args, SessionizationJobArgs())
+       .getOrElse(throw new IllegalArgumentException("Some arguments could not be parsed"))
 
     val csvOptions: Map[String, String] = Map(
       "delimiter" -> " ",
@@ -64,7 +59,7 @@ object SessionizationJob {
         .read
         .options(csvOptions)
         .schema(accessLogEntriesSchema)
-        .csv(inputPath)
+        .csv(jobArgs.accessLogEntriesPath)
 
     Map(
       // Sessionize logs using client IP
@@ -74,14 +69,15 @@ object SessionizationJob {
     ).foreach { case (folder, sessionizationFields) =>
       // 1) Sessionize the web logs using "sessionizationFields"
       val accessLogEntriesWithSessions: DataFrame = {
-        val df: DataFrame = accessLogEntries.transform(sessionize(sessionizationFields))
+        val df: DataFrame = accessLogEntries.transform(sessionize(sessionizationFields, jobArgs.newSessionThreshold))
+        val outputDirectory: String = s"${jobArgs.baseOutputDirectory}/$folder"
 
-        df.coalesce(8)  // TODO: this should be an argument of the job
+        df.coalesce(jobArgs.nbOutputFiles)
           .write
           .mode(SaveMode.Overwrite)
-          .parquet(s"$outputPath/$folder")
+          .parquet(outputDirectory)
 
-        spark.read.parquet(s"$outputPath/$folder")
+        spark.read.parquet(outputDirectory)
       }
 
       // 2) Determine the average session time
@@ -108,7 +104,7 @@ object SessionizationJob {
 
   }
 
-  def sessionize(sessionizationFields: Seq[String])(accessLogEntries: DataFrame): DataFrame = {
+  def sessionize(sessionizationFields: Seq[String], newSessionThreshold: Duration)(accessLogEntries: DataFrame): DataFrame = {
     val isNewSession: Column =
       when(col(unixTsField) - col(previousUnixTsField) < lit(newSessionThreshold.toSeconds),
         lit(0)

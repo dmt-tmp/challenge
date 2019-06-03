@@ -1,12 +1,12 @@
 package jp.paypay.challenge
 
+import com.holdenkarau.spark.testing.DatasetSuiteBase
+import jp.paypay.challenge.SessionizationJob._
 import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.TimestampType
-
-import com.holdenkarau.spark.testing.DatasetSuiteBase
-import jp.paypay.challenge.SessionizationJob._
 import org.scalatest.{DiagrammedAssertions, FunSuite}
+import scala.concurrent.duration._
 // The following imports adds methods to tuples, such as ++ (i.e. concatenation)
 // Cf https://github.com/milessabin/shapeless/wiki/Feature-overview:-shapeless-2.0.0#hlist-style-operations-on-standard-scala-tuples
 import shapeless.syntax.std.tuple._
@@ -78,7 +78,8 @@ class SessionizationJobTest extends FunSuite with DiagrammedAssertions with Data
   test("""Method sessionize should return an access log entries dataframe with new fields:
       |client_ip, previous_timestamp, unix_ts_field, previous_unix_ts_field, is_new_session and user_session_id""".stripMargin) {
 
-    val actualEntriesWithSessions: DataFrame = dummyAccessLogEntries.transform(sessionize(sessionizationFields))
+    val actualEntriesWithSessions: DataFrame =
+      dummyAccessLogEntries.transform(sessionize(sessionizationFields, newSessionThreshold = 15.minutes))
 
     assertDatasetEquals(
       expectedEntriesWithSessions.sort(clientIpField, timestampField),

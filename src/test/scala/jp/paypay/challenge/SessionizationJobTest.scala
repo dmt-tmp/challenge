@@ -15,7 +15,7 @@ class SessionizationJobTest extends FunSuite with DiagrammedAssertions with Data
 
   import spark.implicits._
 
-  val sessionisationFields: Seq[String] = Seq(clientIpField)
+  val sessionizationFields: Seq[String] = Seq(clientIpField)
 
   val clientIp1: String = "1.186.179.175"
   val clientIp2: String = "1.186.235.15"
@@ -98,7 +98,7 @@ class SessionizationJobTest extends FunSuite with DiagrammedAssertions with Data
       |fields "user_session_id", "client_ip" and "session_time".""".stripMargin) {
 
     val usersWithSessionIdsAndTimes: DataFrame =
-      expectedEntriesWithSessions.transform(computeSessionTime(sessionisationFields))
+      expectedEntriesWithSessions.transform(computeSessionTime(sessionizationFields))
 
     assertDatasetEquals(
       expectedUsersWithSessionIdsAndTimes.sort(userSessionIdField, clientIpField),
@@ -110,6 +110,23 @@ class SessionizationJobTest extends FunSuite with DiagrammedAssertions with Data
     assertDatasetEquals(
       expected = Seq(99.8).toDS(),
       result = getAvgSessionTime(expectedUsersWithSessionIdsAndTimes)
+    )
+  }
+
+  test("Method computeNbVisits should return a dataframe with the number of distinct URLs that were visited") {
+    val usersAndNbVisits: DataFrame = expectedEntriesWithSessions.transform(computeNbVisits(sessionizationFields))
+
+    val expectedUsersAndNbVisits: DataFrame = Seq(
+      (1, clientIp1, 2),
+      (2, clientIp1, 2),
+      (1, clientIp2, 1),
+      (2, clientIp2, 2),
+      (1, clientIp3, 1)
+    ).toDF(userSessionIdField, clientIpField, nbUrlVisitsField)
+
+    assertDatasetEquals(
+      expectedUsersAndNbVisits.sort(clientIpField, userSessionIdField),
+      usersAndNbVisits.sort(clientIpField, userSessionIdField)
     )
   }
 

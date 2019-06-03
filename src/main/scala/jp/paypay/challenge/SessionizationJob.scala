@@ -97,11 +97,7 @@ object SessionizationJob {
       }
 
       // 3) Determine unique URL visits per session. To clarify, count a hit to a unique URL only once per session.
-      val usersAndNbVisits: DataFrame =
-        accessLogEntriesWithSessions
-          .withColumn(urlField, split(col(requestField), pattern = " ")(1))
-          .groupBy(userSessionIdField, sessionizationFields: _*)
-          .agg(countDistinct(urlField).as(nbUrlVisitsField))
+      val usersAndNbVisits: DataFrame = accessLogEntriesWithSessions.transform(computeNbVisits(sessionizationFields))
 
       usersAndNbVisits.describe(nbUrlVisitsField).show(false)
 
@@ -158,6 +154,13 @@ object SessionizationJob {
     usersWithSessionIdsAndTimes
       .select(round(avg(sessionTimeField), scale = 3))
       .as[Double]
+  }
+
+  def computeNbVisits(sessionizationFields: Seq[String])(accessLogEntriesWithSessions: DataFrame): DataFrame = {
+    accessLogEntriesWithSessions
+      .withColumn(urlField, split(col(requestField), pattern = " ")(1))
+      .groupBy(userSessionIdField, sessionizationFields: _*)
+      .agg(countDistinct(urlField).as(nbUrlVisitsField))
   }
 
 }

@@ -48,7 +48,6 @@ object SessionizationJob {
 
   def main(args: Array[String]): Unit = {
     val spark: SparkSession = SparkSession.builder().getOrCreate()
-    import spark.implicits._
 
     // TODO: parse args
     val inputPath: String = args.head
@@ -89,16 +88,9 @@ object SessionizationJob {
 
       // 2) Determine the average session time
       val accessLogEntriesWithSessionTimes: DataFrame =
-        accessLogEntriesWithSessions
-          .groupBy(userSessionIdField, sessionisationFields: _*)
-          .agg(
-            (max(unixTsField) - min(unixTsField)).as(sessionTimeField)
-          )
+        accessLogEntriesWithSessions.transform(computeSessionTime(sessionisationFields))
 
-      val averageSessionTimeDS: Dataset[Double] =
-        accessLogEntriesWithSessionTimes
-          .select(avg(sessionTimeField))
-          .as[Double]
+      val averageSessionTimeDS: Dataset[Double] = getAvgSessionTime(accessLogEntriesWithSessionTimes)
 
       averageSessionTimeDS.collect().headOption.foreach { avgSessionTime =>
         println(s"The average session time is $avgSessionTime seconds.")
@@ -151,6 +143,21 @@ object SessionizationJob {
       .withColumn(userSessionIdField,
         sum(isNewSession).over(windowSpec)
       )
+  }
+
+  def computeSessionTime(sessionizationFields: Seq[String])(accessLogEntriesWithSessions: DataFrame): DataFrame =
+    accessLogEntriesWithSessions
+      .groupBy(userSessionIdField, sessionizationFields: _*)
+      .agg(
+        (max(unixTsField) - min(unixTsField)).as(sessionTimeField)
+      )
+
+  def getAvgSessionTime(accessLogEntriesWithSessionTimes: DataFrame): Dataset[Double] = {
+    import accessLogEntriesWithSessionTimes.sparkSession.implicits._
+
+    accessLogEntriesWithSessionTimes
+      .select(round(avg(sessionTimeField), scale = 3))
+      .as[Double]
   }
 
 }

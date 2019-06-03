@@ -1,5 +1,3 @@
-import sys.process._
-
 name := "challenge"
 version := "0.1-SNAPSHOT"
 organization := "jp.paypay"
@@ -22,19 +20,19 @@ scalacOptions ++= Seq(
 val sparkVersion = "2.2.3"
 
 libraryDependencies ++= Seq(
- // Spark dependencies. Marked as provided because they must not be included in the uber jar
+  // Spark dependencies. Marked as provided because they must not be included in the assembly jar
   "org.apache.spark" %% "spark-core" % sparkVersion % "provided",
-  "org.apache.spark" %% "spark-hive" % sparkVersion % "provided",
   "org.apache.spark" %% "spark-sql" % sparkVersion % "provided",
+
+  "com.github.scopt" %% "scopt" % "3.7.1",
 
   // Test libraries
   "org.scalatest" %% "scalatest" % "3.0.2" % Test,
   "com.holdenkarau" %% "spark-testing-base" % "2.2.3_0.12.0" % Test
 )
 
-// Exclude Scala itself form our assembly JAR, since Spark already bundles Scala.
+// Exclude Scala itself from our assembly JAR, since Spark already bundles Scala.
 assembly / assemblyOption := (assembly / assemblyOption).value.copy(includeScala = false)
-
 
 // Disable parallel execution because of spark-testing-base
 Test / parallelExecution := false
@@ -49,10 +47,4 @@ addArtifact(Compile / assembly / artifact, assembly)
 // Forking is needed to change the JVM options
 Test / fork := true
 // Minimum memory requirements for spark-testing-base
-Test / javaOptions ++= {
-  val javaVersion: String = System.getProperty("java.version")
-  if (javaVersion.startsWith("1.7"))
-    Seq("-Xms256M", "-Xmx1024M", "-XX:MaxPermSize=1024M")
-  else
-    Seq("-Xms256M", "-Xmx1024M", "-XX:MaxMetaspaceSize=1024M")
-}
+Test / javaOptions ++= Seq("-Xms256M", "-Xmx1024M", "-XX:MaxMetaspaceSize=1024M")

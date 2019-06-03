@@ -11,8 +11,8 @@ object SessionizationJob {
   // Name of fields. We use constants to avoid typos in code that manipulates dataframes
   val timestampField: String = "timestamp"
   val previousTimestampField: String = "previous_timestamp"
-  val unixTsField: String = "unix_ts_field"
-  val previousUnixTsField: String = "previous_unix_ts_field"
+  val unixTsField: String = "unix_ts"
+  val previousUnixTsField: String = "previous_unix_ts"
   val clientIpField: String = "client_ip"
   val clientIpAndPortField : String = "client_ip_and_port"
   val isNewSessionField: String = "is_new_session"
@@ -23,7 +23,9 @@ object SessionizationJob {
   val nbUrlVisitsField: String = "nb_url_visits"
   val userAgentField: String = "user_agent"
 
-  // https://docs.aws.amazon.com/elasticloadbalancing/latest/classic/access-log-collection.html#access-log-entry-format
+  /* Schema of access log entries, as defined by
+     https://docs.aws.amazon.com/elasticloadbalancing/latest/classic/access-log-collection.html#access-log-entry-format
+   */
   val accessLogEntriesSchema = new StructType()
     .add(timestampField, TimestampType)
     .add("elb", StringType)
@@ -61,12 +63,19 @@ object SessionizationJob {
         .schema(accessLogEntriesSchema)
         .csv(jobArgs.accessLogEntriesPath)
 
-    Map(
-      // Sessionize logs using client IP
-      "sessionsByIp" -> Seq(clientIpField),
-      // "As a bonus", sessionize logs using client IP and user agent
-      "sessionsByIpAndUserAgent" -> Seq(clientIpField, userAgentField)
-    ).foreach { case (folder, sessionizationFields) =>
+    /* The job will iterate over the following Map:
+        - whose key is a folder. Results of SessionizationJob will be saved to s"${jobArgs.baseOutputDirectory}/$folder"
+        - whose value is a sequence of fields used to find unique users
+     */
+    val foldersToSessionizationFieds: Map[String, Seq[String]] =
+      Map(
+        // Sessionize logs using client IP
+        "sessionsByIp" -> Seq(clientIpField),
+        // "As a bonus", sessionize logs using client IP and user agent
+        "sessionsByIpAndUserAgent" -> Seq(clientIpField, userAgentField)
+      )
+
+    foldersToSessionizationFieds.foreach { case (folder, sessionizationFields) =>
       // 1) Sessionize the web logs using "sessionizationFields"
       val accessLogEntriesWithSessions: DataFrame = {
         val df: DataFrame = accessLogEntries.transform(sessionize(sessionizationFields, jobArgs.newSessionThreshold))
@@ -90,12 +99,12 @@ object SessionizationJob {
         println(s"The average session time is $avgSessionTime seconds.")
       }
 
-      // 3) Determine unique URL visits per session. To clarify, count a hit to a unique URL only once per session.
+      // 3) Determine the number of unique URL visits per session
       val usersAndNbVisits: DataFrame = accessLogEntriesWithSessions.transform(computeNbVisits(sessionizationFields))
 
       usersAndNbVisits.describe(nbUrlVisitsField).show(false)
 
-      // 4) Find the most engaged users, ie the IPs with the longest session times
+      // 4) Find the most engaged users, ie the users with the longest session times
       val mostEngagedUsers: DataFrame =
         usersWithSessionIdsAndTimes.transform(getMostEngagedUsers(sessionizationFields, nbUsers = 10))
 
@@ -104,7 +113,15 @@ object SessionizationJob {
 
   }
 
+  /**
+    * @param sessionizationFields fields used to find unique users
+    * @param newSessionThreshold cf description of argument "new-session-threshold" in [[SessionizationJobArgs]]
+    * @param accessLogEntries access log entries read using [[accessLogEntriesSchema]]
+    * @return an access log entries dataframe with new fields:
+    *   "client_ip", "previous_timestamp", "unix_ts", "previous_unix_ts", "is_new_session" and "user_session_id"
+    */
   def sessionize(sessionizationFields: Seq[String], newSessionThreshold: Duration)(accessLogEntries: DataFrame): DataFrame = {
+    // This method is inspired by https://mode.com/blog/finding-user-sessions-sql
     val isNewSession: Column =
       when(col(unixTsField) - col(previousUnixTsField) < lit(newSessionThreshold.toSeconds),
         lit(0)
@@ -132,28 +149,49 @@ object SessionizationJob {
       )
   }
 
-  def computeSessionTime(sessionizationFields: Seq[String])(accessLogEntriesWithSessions: DataFrame): DataFrame =
-    accessLogEntriesWithSessions
+  /**
+    * @param sessionizationFields fields used to find unique users
+    * @param dfWithSessionsAndUnixTs a dataframe that contains fields "user_session_id" and "unix_ts"
+    * @return a dataframe with fields "user_session_id", "session_time" and the sessionizationFields
+    */
+  def computeSessionTime(sessionizationFields: Seq[String])(dfWithSessionsAndUnixTs: DataFrame): DataFrame =
+    dfWithSessionsAndUnixTs
       .groupBy(userSessionIdField, sessionizationFields: _*)
       .agg(
         (max(unixTsField) - min(unixTsField)).as(sessionTimeField)
       )
 
-  def getAvgSessionTime(usersWithSessionIdsAndTimes: DataFrame): Dataset[Double] = {
-    import usersWithSessionIdsAndTimes.sparkSession.implicits._
+  /**
+    * @param dfWithSessionTimes a dataframe that contains field "session_time"
+    * @return a one-line dataset, containing the average session time
+    */
+  def getAvgSessionTime(dfWithSessionTimes: DataFrame): Dataset[Double] = {
+    import dfWithSessionTimes.sparkSession.implicits._ // needed to call ".as[Double]"
 
-    usersWithSessionIdsAndTimes
+    dfWithSessionTimes
       .select(round(avg(sessionTimeField), scale = 3))
       .as[Double]
   }
 
-  def computeNbVisits(sessionizationFields: Seq[String])(accessLogEntriesWithSessions: DataFrame): DataFrame = {
+  /**
+    * @param sessionizationFields fields used to find unique users
+    * @param accessLogEntriesWithSessions a dataframe that contains fields "request", "user_session_id" and sessionizationFields
+    * @return a dataframe that contains sessionizationFields, fields "user_session_id"
+    *   and "nb_url_visits" (the number of distinct URLs that were visited during the session)
+    */
+  def computeNbVisits(sessionizationFields: Seq[String])(accessLogEntriesWithSessions: DataFrame): DataFrame =
     accessLogEntriesWithSessions
       .withColumn(urlField, split(col(requestField), pattern = " ")(1))
       .groupBy(userSessionIdField, sessionizationFields: _*)
       .agg(countDistinct(urlField).as(nbUrlVisitsField))
-  }
 
+  /**
+    * @param sessionizationFields fields used to find unique users
+    * @param nbUsers the number of users to keep
+    * @param usersWithSessionIdsAndTimes
+    * @return the top "nbUsers". The returned dataframe contains field "session_time" and sessionizationFields,
+    *   and is ordered by decreasing "session_time"
+    */
   def getMostEngagedUsers(sessionizationFields: Seq[String], nbUsers: Int)(usersWithSessionIdsAndTimes: DataFrame): DataFrame =
     usersWithSessionIdsAndTimes
       // Only keep the longest session for each user, to avoid returning duplicate users

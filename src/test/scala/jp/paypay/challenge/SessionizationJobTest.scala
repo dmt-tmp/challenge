@@ -76,7 +76,7 @@ class SessionizationJobTest extends FunSuite with DiagrammedAssertions with Data
       .withColumn(previousTimestampField, col(previousTimestampField).cast(TimestampType))
 
   test("""Method sessionize should return an access log entries dataframe with new fields:
-      |client_ip, previous_timestamp, unix_ts_field, previous_unix_ts_field, is_new_session and user_session_id""".stripMargin) {
+      |client_ip, previous_timestamp, unix_ts, previous_unix_ts, is_new_session and user_session_id""".stripMargin) {
 
     val actualEntriesWithSessions: DataFrame =
       dummyAccessLogEntries.transform(sessionize(sessionizationFields, newSessionThreshold = 15.minutes))

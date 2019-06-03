@@ -71,9 +71,9 @@ object SessionizationJob {
       "sessionsByIp" -> Seq(clientIpField),
       // "As a bonus", sessionize logs using client IP and user agent
       "sessionsByIpAndUserAgent" -> Seq(clientIpField, userAgentField)
-    ).foreach { case (folder, sessionisationFields) =>
-      // 1) Sessionize the web logs using "sessionisationFields"
-      val sessionizationCols: Seq[Column] = sessionisationFields.map(col)
+    ).foreach { case (folder, sessionizationFields) =>
+      // 1) Sessionize the web logs using "sessionizationFields"
+      val sessionizationCols: Seq[Column] = sessionizationFields.map(col)
 
       val accessLogEntriesWithSessions: DataFrame = {
         val df: DataFrame = accessLogEntries.transform(sessionize(sessionizationCols))
@@ -88,7 +88,7 @@ object SessionizationJob {
 
       // 2) Determine the average session time
       val usersWithSessionIdsAndTimes: DataFrame =
-        accessLogEntriesWithSessions.transform(computeSessionTime(sessionisationFields))
+        accessLogEntriesWithSessions.transform(computeSessionTime(sessionizationFields))
 
       val averageSessionTimeDS: Dataset[Double] = getAvgSessionTime(usersWithSessionIdsAndTimes)
 
@@ -100,7 +100,7 @@ object SessionizationJob {
       val usersAndNbVisits: DataFrame =
         accessLogEntriesWithSessions
           .withColumn(urlField, split(col(requestField), pattern = " ")(1))
-          .groupBy(userSessionIdField, sessionisationFields: _*)
+          .groupBy(userSessionIdField, sessionizationFields: _*)
           .agg(countDistinct(urlField).as(nbUrlVisitsField))
 
       usersAndNbVisits.describe(nbUrlVisitsField).show(false)
@@ -112,7 +112,7 @@ object SessionizationJob {
           .groupBy(sessionizationCols: _*)
           .agg(max(sessionTimeField).as(sessionTimeField))
           .orderBy(col(sessionTimeField).desc)
-          .select(sessionTimeField, sessionisationFields: _*)
+          .select(sessionTimeField, sessionizationFields: _*)
           .limit(10)
 
       mostEngagedUsers.show(false)

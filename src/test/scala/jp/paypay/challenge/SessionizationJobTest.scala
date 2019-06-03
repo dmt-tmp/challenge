@@ -86,24 +86,32 @@ class SessionizationJobTest extends FunSuite with DiagrammedAssertions with Data
     )
   }
 
+  lazy val expectedUsersWithSessionIdsAndTimes = Seq(
+    (1, clientIp1, 60L),
+    (2, clientIp1, 49L),
+    (1, clientIp2, 0L),
+    (2, clientIp2, 390L),
+    (1, clientIp3, 0L)
+  ).toDF(userSessionIdField, clientIpField, sessionTimeField)
+
   test("""Method computeSessionTime should return a dataframe with
       |fields "user_session_id", "client_ip" and "session_time".""".stripMargin) {
 
-    val accessLogEntriesWithSessionTimes: DataFrame =
+    val usersWithSessionIdsAndTimes: DataFrame =
       expectedEntriesWithSessions.transform(computeSessionTime(sessionisationFields))
 
-    val expectedDF = Seq(
-      (1, clientIp1, 60L),
-      (2, clientIp1, 49L),
-      (1, clientIp2, 0L),
-      (2, clientIp2, 390L),
-      (1, clientIp3, 0L)
-    ).toDF(userSessionIdField, clientIpField, sessionTimeField)
-
     assertDatasetEquals(
-      expectedDF.sort(userSessionIdField, clientIpField),
-      accessLogEntriesWithSessionTimes.sort(userSessionIdField, clientIpField)
+      expectedUsersWithSessionIdsAndTimes.sort(userSessionIdField, clientIpField),
+      usersWithSessionIdsAndTimes.sort(userSessionIdField, clientIpField)
     )
   }
+
+  test("Method getAvgSessionTime should return a dataset of one line, containing the average session time") {
+    assertDatasetEquals(
+      expected = Seq(99.8).toDS(),
+      result = getAvgSessionTime(expectedUsersWithSessionIdsAndTimes)
+    )
+  }
+
 }
 

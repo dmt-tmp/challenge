@@ -87,10 +87,10 @@ object SessionizationJob {
       }
 
       // 2) Determine the average session time
-      val accessLogEntriesWithSessionTimes: DataFrame =
+      val usersWithSessionIdsAndTimes: DataFrame =
         accessLogEntriesWithSessions.transform(computeSessionTime(sessionisationFields))
 
-      val averageSessionTimeDS: Dataset[Double] = getAvgSessionTime(accessLogEntriesWithSessionTimes)
+      val averageSessionTimeDS: Dataset[Double] = getAvgSessionTime(usersWithSessionIdsAndTimes)
 
       averageSessionTimeDS.collect().headOption.foreach { avgSessionTime =>
         println(s"The average session time is $avgSessionTime seconds.")
@@ -107,7 +107,7 @@ object SessionizationJob {
 
       // 4) Find the most engaged users, ie the IPs with the longest session times
       val mostEngagedUsers: DataFrame =
-        accessLogEntriesWithSessionTimes
+        usersWithSessionIdsAndTimes
           // Only keep the longest session for each IP, to avoid duplicat IPs in the result
           .groupBy(sessionizationCols: _*)
           .agg(max(sessionTimeField).as(sessionTimeField))
@@ -152,10 +152,10 @@ object SessionizationJob {
         (max(unixTsField) - min(unixTsField)).as(sessionTimeField)
       )
 
-  def getAvgSessionTime(accessLogEntriesWithSessionTimes: DataFrame): Dataset[Double] = {
-    import accessLogEntriesWithSessionTimes.sparkSession.implicits._
+  def getAvgSessionTime(usersWithSessionIdsAndTimes: DataFrame): Dataset[Double] = {
+    import usersWithSessionIdsAndTimes.sparkSession.implicits._
 
-    accessLogEntriesWithSessionTimes
+    usersWithSessionIdsAndTimes
       .select(round(avg(sessionTimeField), scale = 3))
       .as[Double]
   }

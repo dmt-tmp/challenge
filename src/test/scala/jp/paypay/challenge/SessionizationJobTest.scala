@@ -78,7 +78,7 @@ class SessionizationJobTest extends FunSuite with DiagrammedAssertions with Data
   test("""Method sessionize should return an access log entries dataframe with new fields:
       |client_ip, previous_timestamp, unix_ts_field, previous_unix_ts_field, is_new_session and user_session_id""".stripMargin) {
 
-    val actualEntriesWithSessions: DataFrame = dummyAccessLogEntries.transform(sessionize(Seq(col(clientIpField))))
+    val actualEntriesWithSessions: DataFrame = dummyAccessLogEntries.transform(sessionize(sessionizationFields))
 
     assertDatasetEquals(
       expectedEntriesWithSessions.sort(clientIpField, timestampField),
@@ -128,6 +128,20 @@ class SessionizationJobTest extends FunSuite with DiagrammedAssertions with Data
       expectedUsersAndNbVisits.sort(clientIpField, userSessionIdField),
       usersAndNbVisits.sort(clientIpField, userSessionIdField)
     )
+  }
+
+  test("Method getMostEngagedUsers should return the most engaged users, without duplicates") {
+    val mostEngagedUsers: DataFrame =
+      expectedUsersWithSessionIdsAndTimes.transform(getMostEngagedUsers(sessionizationFields, nbUsers = 3))
+
+    val expectedMostEngagedUsers : DataFrame =
+      Seq(
+        (390, clientIp2),
+        (60, clientIp1),
+        (0, clientIp3)
+      ).toDF(sessionTimeField, clientIpField)
+
+    assertDatasetEquals(expectedMostEngagedUsers, mostEngagedUsers)
   }
 
 }

@@ -73,10 +73,8 @@ object SessionizationJob {
       "sessionsByIpAndUserAgent" -> Seq(clientIpField, userAgentField)
     ).foreach { case (folder, sessionizationFields) =>
       // 1) Sessionize the web logs using "sessionizationFields"
-      val sessionizationCols: Seq[Column] = sessionizationFields.map(col)
-
       val accessLogEntriesWithSessions: DataFrame = {
-        val df: DataFrame = accessLogEntries.transform(sessionize(sessionizationCols))
+        val df: DataFrame = accessLogEntries.transform(sessionize(sessionizationFields))
 
         df.coalesce(8)  // TODO: this should be an argument of the job
           .write
@@ -103,20 +101,14 @@ object SessionizationJob {
 
       // 4) Find the most engaged users, ie the IPs with the longest session times
       val mostEngagedUsers: DataFrame =
-        usersWithSessionIdsAndTimes
-          // Only keep the longest session for each IP, to avoid duplicat IPs in the result
-          .groupBy(sessionizationCols: _*)
-          .agg(max(sessionTimeField).as(sessionTimeField))
-          .orderBy(col(sessionTimeField).desc)
-          .select(sessionTimeField, sessionizationFields: _*)
-          .limit(10)
+        usersWithSessionIdsAndTimes.transform(getMostEngagedUsers(sessionizationFields, nbUsers = 10))
 
       mostEngagedUsers.show(false)
     }
 
   }
 
-  def sessionize(sessionizationCols: Seq[Column])(accessLogEntries: DataFrame): DataFrame = {
+  def sessionize(sessionizationFields: Seq[String])(accessLogEntries: DataFrame): DataFrame = {
     val isNewSession: Column =
       when(col(unixTsField) - col(previousUnixTsField) < lit(newSessionThreshold.toSeconds),
         lit(0)
@@ -124,7 +116,10 @@ object SessionizationJob {
         lit(1)
       )
 
-    val windowSpec: WindowSpec = Window.partitionBy(sessionizationCols: _*).orderBy(timestampField)
+    val windowSpec: WindowSpec =
+      Window
+        .partitionBy(sessionizationFields.map(col): _*)
+        .orderBy(timestampField)
 
     accessLogEntries
       .withColumn(clientIpField,
@@ -162,5 +157,14 @@ object SessionizationJob {
       .groupBy(userSessionIdField, sessionizationFields: _*)
       .agg(countDistinct(urlField).as(nbUrlVisitsField))
   }
+
+  def getMostEngagedUsers(sessionizationFields: Seq[String], nbUsers: Int)(usersWithSessionIdsAndTimes: DataFrame): DataFrame =
+    usersWithSessionIdsAndTimes
+      // Only keep the longest session for each user, to avoid returning duplicate users
+      .groupBy(sessionizationFields.map(col): _*)
+      .agg(max(sessionTimeField).as(sessionTimeField))
+      .orderBy(col(sessionTimeField).desc)
+      .select(sessionTimeField, sessionizationFields: _*)
+      .limit(nbUsers)
 
 }

@@ -2,6 +2,7 @@ package jp.paypay.challenge
 
 import org.apache.spark.sql.{Column, DataFrame, Dataset, SaveMode, SparkSession}
 import org.apache.spark.sql.expressions.{Window, WindowSpec}
+import org.apache.spark.sql.expressions.Window.{currentRow, unboundedPreceding}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 import scala.concurrent.duration._
@@ -145,7 +146,8 @@ object SessionizationJob {
       .withColumn(previousUnixTsField, unix_timestamp(col(previousTimestampField)))
       .withColumn(isNewSessionField, isNewSession)
       .withColumn(userSessionIdField,
-        sum(isNewSession).over(windowSpec)
+        // Cumulative sum of "is_new_session" creates a unique session id per user
+        sum(isNewSession).over(windowSpec.rangeBetween(unboundedPreceding, currentRow))
       )
   }
 
